@@ -1,18 +1,29 @@
 package com.bavelsoft.entityobserver;
 
-//TODO optimize imports
+import static java.util.Arrays.asList;
+import static java.util.Collections.disjoint;
+import static java.util.stream.Collectors.toSet;
+import static javax.lang.model.type.TypeKind.VOID;
+import static javax.tools.StandardLocation.CLASS_OUTPUT;
+import static com.squareup.javapoet.MethodSpec.overriding;
+import static javax.lang.model.element.Modifier.PRIVATE;
+import static javax.lang.model.element.Modifier.PUBLIC;
+import static javax.lang.model.element.Modifier.FINAL;
+import static javax.lang.model.element.Modifier.NATIVE;
+
 import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.ArrayTypeName;
 import com.squareup.javapoet.FieldSpec;
 import com.squareup.javapoet.MethodSpec;
-import static com.squareup.javapoet.MethodSpec.overriding;
 import com.squareup.javapoet.TypeSpec;
 import java.io.IOException;
 import java.io.Writer;
-import javax.lang.model.element.Modifier;
-import javax.annotation.processing.Filer;
+import java.util.Set;
+import java.util.Arrays;
+import javax.tools.FileObject;
 import javax.tools.JavaFileObject;
+import javax.annotation.processing.Filer;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Messager;
 import javax.annotation.processing.ProcessingEnvironment;
@@ -27,19 +38,8 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
-import static javax.lang.model.type.TypeKind.VOID;
 import javax.lang.model.type.ExecutableType;
-import java.io.Writer;
-import java.io.IOException;
-import java.util.Set;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.Arrays;
-import javax.tools.FileObject;
-import static java.util.stream.Collectors.toSet;
-import static javax.tools.StandardLocation.CLASS_OUTPUT;
 import com.google.auto.service.AutoService;
-import javax.inject.Named;
 
 
 @AutoService(Processor.class)
@@ -72,34 +72,48 @@ public class ObservableProcessor extends AbstractProcessor {
 		String p = elementUtils.getPackageOf(element).toString();
 		String c = element.getSimpleName().toString() + "Observable";
 //TODO inner class support
-		JavaFileObject o = filer.createSourceFile(p+"."+c);
-		Writer w = o.openWriter();
 		TypeName ti = TypeName.get(element.asType());
 		TypeName at = ArrayTypeName.of(Observer.class);
 		TypeName ab = ArrayTypeName.of(Object.class);
+		MethodSpec beforeChange = MethodSpec.methodBuilder("beforeChange")
+			.addModifiers(PRIVATE)
+			.beginControlFlow("for (int i=0; i<observers.length; i++)")
+			.addStatement("beforeValues[i] = observers[i].beforeChange(underlying)")
+			.endControlFlow()
+			.build();
+		MethodSpec afterChange = MethodSpec.methodBuilder("afterChange")
+			.addModifiers(PRIVATE)
+			.beginControlFlow("for (int i=0; i<observers.length; i++)")
+			.addStatement("observers[i].afterChange(underlying, beforeValues[i])")
+			.endControlFlow()
+			.build();
 		TypeSpec.Builder t = TypeSpec.classBuilder(c)
 			.addSuperinterface(ti)
-			.addModifiers(Modifier.PUBLIC)
+			.addModifiers(PUBLIC)
 			.addField(FieldSpec.builder(ti, "underlying")
-				.addModifiers(Modifier.PRIVATE)
+				.addModifiers(PRIVATE)
 				.build())
 			.addField(FieldSpec.builder(at, "observers")
-				.addModifiers(Modifier.PRIVATE)
+				.addModifiers(PRIVATE)
 				.build())
 			.addField(FieldSpec.builder(ab, "beforeValues")
-				.addModifiers(Modifier.PRIVATE)
+				.addModifiers(PRIVATE)
 				.build())
 			.addMethod(MethodSpec.constructorBuilder()
-				.addModifiers(Modifier.PUBLIC)
+				.addModifiers(PUBLIC)
 				.addParameter(ti, "underlying")
 				.addParameter(at, "observers")
 				.varargs()
 				.addStatement("this.underlying = underlying")
 				.addStatement("this.observers = observers")
 				.addStatement("this.beforeValues = new Object[observers.length]")
-				.build());
+				.addStatement("this.afterChange()")
+				.build())
+			.addMethod(beforeChange)
+			.addMethod(afterChange);
 		for (Element e : ((TypeElement)element).getEnclosedElements()) {
-			if (e.getKind() == ElementKind.METHOD) {
+			if (e.getKind() == ElementKind.METHOD && disjoint(e.getModifiers(), asList(FINAL, NATIVE))) {
+				//TODO only NATIVE because javapoet overriding() can't handle it; report the bug!
 				ExecutableElement ee = (ExecutableElement)e;
 				StringBuilder vb = new StringBuilder();
 				for (VariableElement ve : ee.getParameters()) {
@@ -107,21 +121,23 @@ public class ObservableProcessor extends AbstractProcessor {
 						vb.append(", ");
 					vb.append(ve.getSimpleName().toString());
 				}
-				boolean isVoid = ee.getReturnType().getKind() == VOID;
-//TODO variable names not conflicting with parameter names
-//TODO just delegate the methods in the (unannotated) superinterfaces
-				MethodSpec.Builder m = overriding(ee)
-					.addStatement("for (int i=0; i<observers.length; i++)\nbeforeValues[i] = observers[i].beforeChange(underlying)");
-				if (isVoid)
-					m.addStatement("underlying.$L($L)", ee.getSimpleName(), vb);
-				else
-					m.addStatement("$T returnValue = underlying.$L($L)", ee.getReturnType(), ee.getSimpleName(), vb);
-				m.addStatement("for (int i=0; i<observers.length; i++)\nobservers[i].afterChange(underlying, beforeValues[i])");
-				if (!isVoid)
+				boolean isReturning = ee.getReturnType().getKind() != VOID;
+				boolean isObservable = ee.getEnclosingElement().getAnnotation(Observable.class) != null;
+				MethodSpec.Builder m = overriding(ee);
+				if (isObservable)
+					m.addStatement("$N()", beforeChange);
+				if (isReturning)
+					m.addCode("$T returnValue = ", ee.getReturnType());
+				m.addStatement("underlying.$L($L)", ee.getSimpleName(), vb);
+				if (isObservable)
+					m.addStatement("$N()", afterChange);
+				if (isReturning)
 					m.addStatement("return returnValue");
 				t.addMethod(m.build());
 			}
 		}
+		JavaFileObject o = filer.createSourceFile(p+"."+c);
+		Writer w = o.openWriter();
 		JavaFile f = JavaFile.builder(p, t.build()).build();
 		f.writeTo(w);
 		w.close();
