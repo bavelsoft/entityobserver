@@ -10,7 +10,6 @@ public class Test {
 });
 		myEntity.f();
 		myEntity.f();
-		myEntity.f();
 		assertEquals(myEntity.g(), 42);
 		assertEquals(c, 3);
 	}
