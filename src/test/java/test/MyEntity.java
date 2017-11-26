@@ -1,9 +1,6 @@
 package test;
 
 @com.bavelsoft.entityobserver.Observable
-interface MyEntity { //extends MyEntitySuper {
-	void f();
-	int g();
-	int h(int j);
-	int h(int j, int k);
+public interface MyEntity extends MyEntitySuper, MyEntityGetters {
+	int f(int x);
 }

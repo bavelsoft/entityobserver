@@ -1,6 +1,8 @@
 package com.bavelsoft.entityobserver;
 
 public interface Observer<T, V> {
-	V beforeChange(T t);
+	default V beforeChange(T t) {
+		return null;
+	};
 	void afterChange(T t, V v);
 }

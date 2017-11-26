@@ -111,7 +111,7 @@ public class ObservableProcessor extends AbstractProcessor {
 				.build())
 			.addMethod(beforeChange)
 			.addMethod(afterChange);
-		for (Element e : ((TypeElement)element).getEnclosedElements()) {
+		for (Element e : elementUtils.getAllMembers((TypeElement)element)) {
 			if (e.getKind() == ElementKind.METHOD && disjoint(e.getModifiers(), asList(FINAL, NATIVE))) {
 				//TODO only NATIVE because javapoet overriding() can't handle it; report the bug!
 				ExecutableElement ee = (ExecutableElement)e;
