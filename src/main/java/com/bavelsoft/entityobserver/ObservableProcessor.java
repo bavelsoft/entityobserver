@@ -5,7 +5,6 @@ import static java.util.Collections.disjoint;
 import static java.util.stream.Collectors.toSet;
 import static javax.lang.model.type.TypeKind.VOID;
 import static javax.tools.StandardLocation.CLASS_OUTPUT;
-import static com.squareup.javapoet.MethodSpec.overriding;
 import static javax.lang.model.element.Modifier.PRIVATE;
 import static javax.lang.model.element.Modifier.PUBLIC;
 import static javax.lang.model.element.Modifier.FINAL;
@@ -69,12 +68,11 @@ public class ObservableProcessor extends AbstractProcessor {
 	}
 
 	private void process(Element element) throws IOException {
-		String p = elementUtils.getPackageOf(element).toString();
-		String c = element.getSimpleName().toString() + "Observable";
+		String packageName = elementUtils.getPackageOf(element).toString();
 //TODO inner class support
-		TypeName ti = TypeName.get(element.asType());
-		TypeName at = ArrayTypeName.of(Observer.class);
-		TypeName ab = ArrayTypeName.of(Object.class);
+		TypeName underlyingType = TypeName.get(element.asType());
+		TypeName observersType = ArrayTypeName.of(Observer.class);
+		TypeName beforeValuesType = ArrayTypeName.of(Object.class);
 		MethodSpec beforeChange = MethodSpec.methodBuilder("beforeChange")
 			.addModifiers(PRIVATE)
 			.beginControlFlow("for (int i=0; i<observers.length; i++)")
@@ -87,22 +85,22 @@ public class ObservableProcessor extends AbstractProcessor {
 			.addStatement("observers[i].afterChange(underlying, beforeValues[i])")
 			.endControlFlow()
 			.build();
-		TypeSpec.Builder t = TypeSpec.classBuilder(c)
-			.addSuperinterface(ti)
+		TypeSpec.Builder typeSpec = TypeSpec.classBuilder(getClassName(element))
+			.addSuperinterface(underlyingType)
 			.addModifiers(PUBLIC)
-			.addField(FieldSpec.builder(ti, "underlying")
+			.addField(FieldSpec.builder(underlyingType, "underlying")
 				.addModifiers(PRIVATE)
 				.build())
-			.addField(FieldSpec.builder(at, "observers")
+			.addField(FieldSpec.builder(observersType, "observers")
 				.addModifiers(PRIVATE)
 				.build())
-			.addField(FieldSpec.builder(ab, "beforeValues")
+			.addField(FieldSpec.builder(beforeValuesType, "beforeValues")
 				.addModifiers(PRIVATE)
 				.build())
 			.addMethod(MethodSpec.constructorBuilder()
 				.addModifiers(PUBLIC)
-				.addParameter(ti, "underlying")
-				.addParameter(at, "observers")
+				.addParameter(underlyingType, "underlying")
+				.addParameter(observersType, "observers")
 				.varargs()
 				.addStatement("this.underlying = underlying")
 				.addStatement("this.observers = observers")
@@ -115,32 +113,46 @@ public class ObservableProcessor extends AbstractProcessor {
 			if (e.getKind() == ElementKind.METHOD && disjoint(e.getModifiers(), asList(FINAL, NATIVE))) {
 				//TODO only NATIVE because javapoet overriding() can't handle it; report the bug!
 				ExecutableElement ee = (ExecutableElement)e;
-				StringBuilder vb = new StringBuilder();
-				for (VariableElement ve : ee.getParameters()) {
-					if (vb.length() > 0)
-						vb.append(", ");
-					vb.append(ve.getSimpleName().toString());
-				}
-				boolean isReturning = ee.getReturnType().getKind() != VOID;
-				boolean isObservable = ee.getEnclosingElement().getAnnotation(Observable.class) != null;
-				MethodSpec.Builder m = overriding(ee);
-				if (isObservable)
-					m.addStatement("$N()", beforeChange);
-				if (isReturning)
-					m.addCode("$T returnValue = ", ee.getReturnType());
-				m.addStatement("underlying.$L($L)", ee.getSimpleName(), vb);
-				if (isObservable)
-					m.addStatement("$N()", afterChange);
-				if (isReturning)
-					m.addStatement("return returnValue");
-				t.addMethod(m.build());
+				MethodSpec method = getMethod(ee, beforeChange, afterChange).build();
+				typeSpec.addMethod(method);
 			}
 		}
-		JavaFileObject o = filer.createSourceFile(p+"."+c);
-		Writer w = o.openWriter();
-		JavaFile f = JavaFile.builder(p, t.build()).build();
-		f.writeTo(w);
-		w.close();
+		write(element, typeSpec.build());
+	}
+
+	MethodSpec.Builder getMethod(ExecutableElement ee, MethodSpec beforeChange, MethodSpec afterChange) {
+		StringBuilder paramString = new StringBuilder();
+		for (VariableElement ve : ee.getParameters()) {
+			if (paramString.length() > 0)
+				paramString.append(", ");
+			paramString.append(ve.getSimpleName().toString());
+		}
+		boolean isReturning = ee.getReturnType().getKind() != VOID;
+		boolean isObservable = ee.getEnclosingElement().getAnnotation(Observable.class) != null;
+		MethodSpec.Builder method = MethodSpec.overriding(ee);
+		if (isObservable)
+			method.addStatement("$N()", beforeChange);
+		if (isReturning)
+			method.addCode("$T returnValue = ", ee.getReturnType());
+		method.addStatement("underlying.$L($L)", ee.getSimpleName(), paramString);
+		if (isObservable)
+			method.addStatement("$N()", afterChange);
+		if (isReturning)
+			method.addStatement("return returnValue");
+		return method;
+	}
+
+        private void write(Element element, TypeSpec typeSpec) throws IOException {
+                String packageName = elementUtils.getPackageOf(element).toString();
+                JavaFileObject javaFileObject = filer.createSourceFile(packageName+"."+getClassName(element));
+                Writer writer = javaFileObject.openWriter();
+                JavaFile javaFile = JavaFile.builder(packageName, typeSpec).build();
+                javaFile.writeTo(writer);
+                writer.close();
+        }
+
+        private String getClassName(Element element) {
+		return element.getSimpleName().toString() + "Observable";
 	}
 
 	@Override
